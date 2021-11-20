@@ -32,12 +32,17 @@ uniform mat4 uModelViewMatrix;
 uniform mat3 uNormalMatrix;
 uniform mat4 uProjectionMatrix;
 
-out vec2 vTexCoord;
+//out vec2 vTexCoordStadium;
+out vec2 vTexCoordlogo;
 out vec3 vNormal;
 
 void main() {
-  vTexCoord.s = aVertexPosition.x + 0.5;
-  vTexCoord.t = aVertexPosition.y + 0.5;
+  vNormal = uNormalMatrix*aVertexNormal;
+  vec4 VertexPos = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+  vTexCoordlogo.s = aVertexPosition.x +0.5;
+  vTexCoordlogo.t = aVertexPosition.y + 0.5;
+
+
 
   gl_Position = uProjectionMatrix*uModelViewMatrix*vec4(aVertexPosition, 1.0);
 }
@@ -52,16 +57,21 @@ var fs = `#version 300 es
 precision mediump float;
     
 in vec3 vNormal;
-in vec2 vTexCoord;
+in vec2 vTexCoordlogo;
 uniform sampler2D uSampler;
 uniform sampler2D uSampler2;
 
 out vec4 outColor;
+
     
 void main() {
-  vec3 illinois = vec3(texture(uSampler, vTexCoord));
-  vec3 stadium = vec3(texture(uSampler2, vTexCoord));
-  vec3 c = 0.5*illinois + 0.5*stadium;
+
+  vec2 vTexCoordStadium = vec2((vNormal.x + 1.0) / 2.0,(vNormal.y + 1.0) / 2.0);
+
+  vec3 stadium = vec3(texture(uSampler2, vTexCoordStadium));
+  vec3 illinois = vec3(texture(uSampler, vTexCoordlogo));
+  //vec3 stadium = vec3(texture(uSampler2, vTexCoord));
+  vec3 c = 0.3*illinois + 0.7*stadium;
 
   outColor = vec4(c,1.0);
 }

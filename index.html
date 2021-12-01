@@ -5,17 +5,22 @@
 
 <script src="gl-matrix-min.js"></script>
 
+<script src="https://greggman.github.io/webgl-lint/webgl-lint.js" crossorigin></script>
+
 <script>
 var gl;
 var shaderProgram;
 var modelview_uniform;
 var normal_uniform;
 var projection_uniform;
-var texture, texture2;
+var rotation_uniform;
+var texture, texture2, texturebump;
 var sampler_uniform;
 var sampler2_uniform;
+var samplerbump_uniform;
 var teapot_vao;
 var vert_pos_attr;
+var vert_normal_attr;
 var vert_normal_attr;
 
 //
@@ -31,18 +36,27 @@ in vec2 aTexCoord;
 uniform mat4 uModelViewMatrix;
 uniform mat3 uNormalMatrix;
 uniform mat4 uProjectionMatrix;
+uniform mat4 uRotationMatrix;
 
 //out vec2 vTexCoordStadium;
-out vec2 vTexCoordlogo;
+//out vec2 vTexCoordlogo;
 out vec3 vNormal;
+out vec4 VertexPos;
+out vec3 vLight;
+out vec3 vEye;
+out vec3 vWorld;
+out vec3 vNormalbump;
 
 void main() {
-  vNormal = uNormalMatrix*aVertexNormal;
-  vec4 VertexPos = uModelViewMatrix * vec4(aVertexPosition, 1.0);
-  vTexCoordlogo.s = aVertexPosition.x +0.5;
-  vTexCoordlogo.t = aVertexPosition.y + 0.5;
+  vNormal = normalize(uNormalMatrix*aVertexNormal);
+  vNormalbump = normalize(uModelViewMatrix*vec4(aVertexPosition, 1.0)).xyz;
+  VertexPos = uRotationMatrix * vec4(aVertexPosition, 1.0);
 
-
+  
+  vLight = normalize(vec3(-1.0,0.5,0.5));
+  vec4 vViewVertex = uModelViewMatrix*vec4(aVertexPosition, 1.0);
+  vEye = vec3(-vViewVertex.xyz);
+  vWorld = aVertexPosition;
 
   gl_Position = uProjectionMatrix*uModelViewMatrix*vec4(aVertexPosition, 1.0);
 }
@@ -55,29 +69,80 @@ void main() {
 var fs = `#version 300 es
 
 precision mediump float;
-    
+
+in vec4 VertexPos;    
 in vec3 vNormal;
-in vec2 vTexCoordlogo;
+in vec3 vLight;
+in vec3 vEye;
+in vec3 vWorld;
+in vec3 vNormalbump;
+//in vec2 vTexCoordlogo;
 uniform sampler2D uSampler;
 uniform sampler2D uSampler2;
+uniform sampler2D uSamplerbump;
 
 out vec4 outColor;
 
     
 void main() {
-
+  
+  
+  
   vec2 vTexCoordStadium = vec2((vNormal.x + 1.0) / 2.0,(vNormal.y + 1.0) / 2.0);
+  vec2 vTexCoordlogo = vec2(atan(VertexPos.x,VertexPos.z)/6.28318530718,(VertexPos.y *2.0) + 0.5);
+
+  
+  vec3 vNEye = normalize(vEye);
+  vec3 vNView = normalize(-vNEye);
+  vec3 vNvLight = normalize(vLight - vNView);
+  vec3 vNvNormal = normalize(vNormal);
+  vec3 vReflect = normalize(reflect(-1.0*vLight,vNvNormal));
+
+  vec3  dxView     = dFdx( vNView );
+  vec3  dyView     = dFdy( vNView );
+  vec2  dxBump    = dFdx( vTexCoordlogo );
+  vec2  dyBump    = dFdy( vTexCoordlogo );
+
+    vec3 dyPerp = cross( dyView, vNormal );
+    vec3 dxPerp = cross( vNormal, dxView );
+    vec3 T = dyPerp * dxBump.x + dxPerp * dyBump.x;
+    vec3 B = dyPerp * dxBump.y + dxPerp * dyBump.y;
+
+    float invmax = inversesqrt( max( dot(T,T), dot(B,B) ) );
+    mat3  tbn      = mat3(T * invmax, B * invmax, vNormal);
+
+
+
 
   vec3 stadium = vec3(texture(uSampler2, vTexCoordStadium));
   vec3 illinois = vec3(texture(uSampler, vTexCoordlogo));
   //vec3 stadium = vec3(texture(uSampler2, vTexCoord));
-  vec3 c = 0.3*illinois + 0.7*stadium;
+  vec3 bumpMap = texture(uSamplerbump, vTexCoordlogo).xyz;
+  vec3 vbumpN = normalize(tbn * (texture(uSamplerbump, vTexCoordlogo).xyz  * 255./127. - 128./127.));
+
+  float checkAngle = dot(vbumpN, vNvLight);
+
+  if (checkAngle > 0.0)
+  {
+    vNvNormal = normalize(vbumpN);
+    vReflect = normalize(reflect(-1.0*vNvLight,vbumpN));
+
+  }
+  
+
+
+  //vNvNormal = normalize(vNvNormal + vbumpN);
+  //vReflect = normalize(reflect(-1.0*vNvLight,vNvNormal));
+  
+
+  vec3 c =  ( stadium * 0.5 + ( illinois) * 0.5 * max(dot(vNvNormal,vNvLight),0.0) + 0.8 * vec3(0.97,0.36,0.32) * pow(max(dot(vNEye,vReflect),0.0),5.0));
 
   outColor = vec4(c,1.0);
 }
 `;
-
-
+//vec3(0.99,0.36,0.32)
+//(0.3*illinois + 0.7*stadium)
+// vec3(1.0,1.0,1.0)* 0.1 +
 
 function initwebgl() {
 
@@ -89,11 +154,14 @@ function initwebgl() {
   gl = canvas.getContext("webgl2");
   if (!gl)
     alert("Failed to create WebGL context!");
+  
 
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 
-  loadshaders(vs,fs);
+  //plane();
 
+  loadshaders(vs,fs);
+  
   // set up vertex array object
  
   teapot_vao = gl.createVertexArray();
@@ -101,7 +169,9 @@ function initwebgl() {
 
   // create a coordinate buffer of vertex positions and
   // connect it to the vertex shader positions
- 
+
+
+
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
   gl.bufferData(gl.ARRAY_BUFFER,
                 new Float32Array(teapot.positions),
@@ -135,6 +205,8 @@ function initwebgl() {
 
   gl.enableVertexAttribArray(vert_normal_attr);
   gl.vertexAttribPointer(vert_normal_attr, 3, gl.FLOAT, false, 0, 0);
+
+
 
   // create an index buffer of triangle faces
 
@@ -199,6 +271,27 @@ function initwebgl() {
     gl.generateMipmap(gl.TEXTURE_2D);
   });
 
+  //Bump Mapping
+  texturebump =  gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texturebump);
+
+  var samplerbump = gl.createSampler();
+  gl.bindSampler(2, samplerbump);
+
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+                gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
+
+
+  var imagebump = new Image();
+  imagebump.src = "INormalMap.png";
+
+  imagebump.addEventListener("load", function() {
+    gl.bindTexture(gl.TEXTURE_2D, texturebump);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, imagebump);
+    gl.generateMipmap(gl.TEXTURE_2D);
+  });
+  
+
   //
   // set up transformation matrices
   //
@@ -242,8 +335,10 @@ function loadshaders(vertexShaderSource,fragmentShaderSource) {
   modelview_uniform = gl.getUniformLocation(shaderProgram, "uModelViewMatrix"); 
   normal_uniform = gl.getUniformLocation(shaderProgram, "uNormalMatrix"); 
   projection_uniform = gl.getUniformLocation(shaderProgram, "uProjectionMatrix"); 
+  rotation_uniform = gl.getUniformLocation(shaderProgram, "uRotationMatrix"); 
   sampler_uniform = gl.getUniformLocation(shaderProgram, "uSampler"); 
   sampler2_uniform = gl.getUniformLocation(shaderProgram, "uSampler2"); 
+  samplerbump_uniform = gl.getUniformLocation(shaderProgram, "uSamplerbump"); 
 }
 
 //
@@ -259,24 +354,34 @@ function draw(time) {
 
   modelview = glMatrix.mat4.create();
   glMatrix.mat4.translate(modelview,modelview,[0.0, 0.0, -2.0]);
+
+  glMatrix.mat4.rotateX(modelview,modelview, 0.523599);
   glMatrix.mat4.rotateY(modelview,modelview, time*0.001);
 
   normalmatrix = glMatrix.mat3.create();
   glMatrix.mat3.normalFromMat4(normalmatrix,modelview);
+  
+  //rotate to fit I texture
+  rotatematrix = glMatrix.mat4.create();
+  glMatrix.mat4.rotateY(rotatematrix,rotatematrix,1.57079632679);
 
   gl.useProgram(shaderProgram);
 
   gl.uniformMatrix4fv(modelview_uniform, false, modelview);
   gl.uniformMatrix3fv(normal_uniform, false, normalmatrix);
   gl.uniformMatrix4fv(projection_uniform, false, projection);
+  gl.uniformMatrix4fv(rotation_uniform, false, rotatematrix);
 
   gl.uniform1i(sampler_uniform,0);
   gl.uniform1i(sampler2_uniform,1);
+  gl.uniform1i(samplerbump_uniform,2);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, texture2);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, texturebump);
 
   gl.bindVertexArray(teapot_vao);
   gl.drawElements(gl.TRIANGLES,
@@ -284,9 +389,189 @@ function draw(time) {
                   gl.UNSIGNED_SHORT,
                   0);
 
+
+   
+
   requestAnimationFrame(draw);
 }
 
+function ShadowGen(){
+  const depthTexture = gl.createTexture();
+  const depthTextureSize = 512;
+  gl.bindTexture(gl.TEXTURE_2D, depthTexture);
+  gl.texImage2D(
+      gl.TEXTURE_2D,      // target
+      0,                  // mip level
+      gl.DEPTH_COMPONENT32F, // internal format
+      depthTextureSize,   // width
+      depthTextureSize,   // height
+      0,                  // border
+      gl.DEPTH_COMPONENT, // format
+      gl.FLOAT,           // type
+      null);              // data
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const depthFramebuffer = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, depthFramebuffer);
+  gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,       // target
+      gl.DEPTH_ATTACHMENT,  // attachment point
+      gl.TEXTURE_2D,        // texture target
+      depthTexture,         // texture
+      0);                   // mip level
+}
+
+function plane(){
+  var canvas = document.getElementById("myGLCanvas");
+  gl = canvas.getContext("webgl2");
+  if (!gl)
+    alert("Failed to create WebGL context!");
+
+  var vs_plane = `
+    attribute vec3 aVertexPosition;                
+    void main() {                                  
+      gl_Position = vec4(aVertexPosition, 1.0);    
+    
+    } `;
+
+  var fs_plane = `
+  precision mediump float;                    
+     void main() {                               
+       gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);  
+     } 
+  `;
+  
+  var planeVertices = [ 0.0,  1.0,  -2.0,
+                          -1.0, -1.0,  0.0,
+                           1.0, 1.0,  0.0
+
+  ];
+
+  var vertexShader_plane = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vertexShader_plane, vs_plane);
+  gl.compileShader(vertexShader_plane);
+  if (!gl.getShaderParameter(vertexShader_plane, gl.COMPILE_STATUS))
+    alert(gl.getShaderInfoLog(vertexShader_plane));
+
+  var fragmentShader_plane = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fragmentShader_plane, fs_plane);
+  gl.compileShader(fragmentShader_plane);
+  if (!gl.getShaderParameter(fragmentShader_plane, gl.COMPILE_STATUS))
+    alert(gl.getShaderInfoLog(fragmentShader_plane));
+
+    var shaderProgram_plane = gl.createProgram();
+  gl.attachShader(shaderProgram_plane, vertexShader_plane);
+  gl.attachShader(shaderProgram_plane, fragmentShader_plane);
+  gl.linkProgram(shaderProgram_plane);
+  if (!gl.getProgramParameter(shaderProgram_plane, gl.LINK_STATUS))
+    alert("Failed to setup plane shaders");
+ 
+
+  var vertexPositionAttribute_plane =
+    gl.getAttribLocation(shaderProgram, "aVertexPosition"); 
+
+    
+
+  var vertexBuffer_plane = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer_plane);
+  
+  gl.bufferData(gl.ARRAY_BUFFER,
+                new Float32Array(planeVertices),
+                gl.STATIC_DRAW);
+
+  vertexBuffer_plane.itemSize = 3;
+  vertexBuffer_plane.numberOfItems = 3;
+
+  gl.vertexAttribPointer(vertexPositionAttribute_plane, 
+                    vertexBuffer_plane.itemSize, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(vertexPositionAttribute_plane);
+  gl.useProgram(shaderProgram_plane);
+
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+   gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexBuffer.numberOfItems);
+
+}
+
+function Test() {
+
+  var canvas = document.getElementById("myGLCanvas");
+  gl = canvas.getContext("webgl2");
+  if (!gl)
+    alert("Failed to create WebGL context!");
+
+var vertexShaderSource = 
+  "attribute vec3 aVertexPosition;                 \n" +
+  "void main() {                                   \n" +
+  "  gl_Position = vec4(aVertexPosition, 1.0);     \n" +
+  "}                                               \n";           
+
+
+var vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS))
+  alert(gl.getShaderInfoLog(vertexShader));
+ 
+
+
+var fragmentShaderSource = 
+   "precision mediump float;                    \n"+
+   "void main() {                               \n"+
+   "  gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);  \n"+
+   "}                                           \n";
+
+
+var fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS))
+  alert(gl.getShaderInfoLog(fragmentShader));
+
+
+var shaderProgram = gl.createProgram();
+gl.attachShader(shaderProgram, vertexShader);
+gl.attachShader(shaderProgram, fragmentShader);
+gl.linkProgram(shaderProgram);
+if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
+  alert("Failed to setup shaders");
+
+
+
+
+var vertexPositionAttribute =
+  gl.getAttribLocation(shaderProgram, "aVertexPosition"); 
+
+
+
+var vertexBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+var triangleVertices = [ 0.0,  -2.0,  1.0,
+                          -1.0, 0.0,  -1.0,
+                           1.0, 0.0,  -1.0
+];
+gl.bufferData(gl.ARRAY_BUFFER,
+              new Float32Array(triangleVertices),
+              gl.STATIC_DRAW);
+vertexBuffer.itemSize = 3;
+vertexBuffer.numberOfItems = 3;
+
+gl.clearColor(0.0, 0.0, 0.0, 1.0);
+gl.clear(gl.COLOR_BUFFER_BIT);
+
+
+gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 
+                       vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
+gl.enableVertexAttribArray(vertexPositionAttribute);
+
+
+gl.useProgram(shaderProgram);
+//gl.enable(gl.DEPTH_TEST);  
+gl.drawArrays(gl.TRIANGLES, 0, vertexBuffer.numberOfItems);
+}
 
 </script>
 

@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE HTML> 
 <html> 
 
@@ -8,18 +10,25 @@
 <script>
 var gl;
 var shaderProgram;
+var shadowProgram;
 var modelview_uniform;
 var normal_uniform;
 var projection_uniform;
 var rotation_uniform;
-var texture, texture2, texturebump;
+var texture, texture2, texturebump,shadowDepthTexture;
 var sampler_uniform;
 var sampler2_uniform;
 var samplerbump_uniform;
+var samplerbump_shadow;
+var shadow_proj_uniform;
+var  shadow_MV_uniform;
 var teapot_vao;
 var vert_pos_attr;
 var vert_normal_attr;
-var vert_normal_attr;
+var vert_attr_shadow;
+var project_uniform_shadow;
+var mv_uniform_shadow;
+var shadowFramebuffer;
 
 //
 // a default vertex shader implemented as a backquoted string variable
@@ -35,6 +44,9 @@ uniform mat4 uModelViewMatrix;
 uniform mat3 uNormalMatrix;
 uniform mat4 uProjectionMatrix;
 uniform mat4 uRotationMatrix;
+
+uniform mat4 uProjectionShadow;
+uniform mat4 uMVShadow;
 
 //out vec2 vTexCoordStadium;
 //out vec2 vTexCoordlogo;
@@ -78,6 +90,7 @@ in vec3 vNormalbump;
 uniform sampler2D uSampler;
 uniform sampler2D uSampler2;
 uniform sampler2D uSamplerbump;
+uniform sampler2D uSamplerShadow;
 
 out vec4 outColor;
 
@@ -138,9 +151,28 @@ void main() {
   outColor = vec4(c,1.0);
 }
 `;
-//vec3(0.99,0.36,0.32)
-//(0.3*illinois + 0.7*stadium)
-// vec3(1.0,1.0,1.0)* 0.1 +
+
+var vsShadow = `
+attribute vec3 aVertexPosShadow;
+
+uniform mat4 uProjectionShadow;
+uniform mat4 uMVShadow;
+
+void main (void) {
+  gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+}
+`;
+
+var fsShadow = `
+precision mediump float;
+
+void main (void) {
+  gl_FragColor = gl_FragCoord.z;
+}
+`
+
+
+var shadowDepthTextureSize = 512;
 
 function initwebgl() {
 
@@ -158,8 +190,52 @@ function initwebgl() {
 
   //plane();
 
+  loadshadowshaders(vsShadow,fsShadow);
+
   loadshaders(vs,fs);
+
+
+  //set up shadow objects
+
+  gl.useProgram(shadowProgram);
+
+  shadowFramebuffer = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,shadowFramebuffer);
+
+  shadowDepthTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,shadowDepthTexture);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,shadowDepthTextureSize,shadowDepthTextureSize,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+
+
+  var renderBufferShadow = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, renderBufferShadow);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16,
+shadowDepthTextureSize, shadowDepthTextureSize);
   
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+gl.TEXTURE_2D, shadowDepthTexture, 0);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT,
+gl.RENDERBUFFER, renderBufferShadow);
+
+
+gl.bindTexture(gl.TEXTURE_2D, null);
+gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+
+shadowProjectionMatrix = glMatrix.mat4.create();
+glMatrix.mat4.ortho(
+  shadowProjectionMatrix, -40, 40, -40, 40, -40.0, 80
+);
+shadowViewMatrix =glMatrix.mat4.create();
+glMatrix.mat4.lookAt(shadowViewMatrix, [-1.0,0.5,0.5], [0, 0, 0],
+[0, 1, 0]);
+
+gl.uniformMatrix4fv(project_uniform_shadow, false, shadowProjectionMatrix);
+gl.uniformMatrix4fv(mv_uniform_shadow, false, shadowViewMatrix);
+
+gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+
   // set up vertex array object
  
   teapot_vao = gl.createVertexArray();
@@ -300,6 +376,26 @@ function initwebgl() {
   requestAnimationFrame(draw);
 }
 
+function loadshadowshaders(vertexShaderSource,fragmentShaderSource){
+
+  var shadowVertexShader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(shadowVertexShader,vsShadow);
+  gl.compileShader(shadowVertexShader);
+
+  var shadowFragmentShader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(shadowFragmentShader,vsShadow);
+  gl.compileShader(shadowFragmentShader);
+  
+  shadowProgram = gl.createProgram();
+  gl.attachShader(shadowProgram,shadowVertexShader);
+  gl.attachShader(shadowProgram,shadowFragmentShader);
+  gl.linkProgram(shadowProgram);
+
+  vert_attr_shadow = gl.getAttribLocation(shadowProgram, "aVertexPosShadow");
+  project_uniform_shadow = gl.getUniformLocation(shadowProgram, "uProjectionShadow"); 
+  mv_uniform_shadow = gl.getUniformLocation(shadowProgram, "uMVShadow"); 
+}
+
 function loadshaders(vertexShaderSource,fragmentShaderSource) {
   var vstextbox = document.getElementById("vertexshader");
 
@@ -337,13 +433,18 @@ function loadshaders(vertexShaderSource,fragmentShaderSource) {
   sampler_uniform = gl.getUniformLocation(shaderProgram, "uSampler"); 
   sampler2_uniform = gl.getUniformLocation(shaderProgram, "uSampler2"); 
   samplerbump_uniform = gl.getUniformLocation(shaderProgram, "uSamplerbump"); 
+  samplerbump_shadow = gl.getUniformLocation(shaderProgram, "uSamplerShadow"); 
+  shadow_proj_uniform = gl.getUniformLocation(shaderProgram, "uProjectionShadow"); 
+  shadow_MV_uniform = gl.getUniformLocation(shaderProgram, "uMVShadow"); 
+
+
 }
 
 //
 // draw callback function that is passed to requestAnimationFrame()
 //
 
-function draw(time) {
+function draw(time){
   gl.clearColor(0.075, 0.16, 0.294, 1.0);
   gl.clearDepth(1.0);
   gl.enable(gl.DEPTH_TEST);
@@ -354,6 +455,7 @@ function draw(time) {
   glMatrix.mat4.translate(modelview,modelview,[0.0, 0.0, -2.0]);
 
   glMatrix.mat4.rotateX(modelview,modelview, 0.523599);
+
   glMatrix.mat4.rotateY(modelview,modelview, time*0.001);
 
   normalmatrix = glMatrix.mat3.create();
@@ -362,6 +464,36 @@ function draw(time) {
   //rotate to fit I texture
   rotatematrix = glMatrix.mat4.create();
   glMatrix.mat4.rotateY(rotatematrix,rotatematrix,1.57079632679);
+  
+  //ShadowMV Matrix
+  shadow_MVmatrix = glMatrix.mat4.clone(modelview);
+  glMatrix.mat4.multiply(shadow_MVmatrix,shadow_MVmatrix,shadowViewMatrix);
+  
+  drawShadow(time);
+  drawObjects(time);
+  
+  requestAnimationFrame(draw);
+}
+
+function drawShadow(time) {
+  gl.useProgram(shadowProgram);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFramebuffer);
+
+  
+  gl.uniformMatrix4fv(mv_uniform_shadow, false, shadow_MVmatrix);
+
+
+  gl.bindVertexArray(teapot_vao);
+  gl.drawElements(gl.TRIANGLES,
+                  teapot.faces.length,
+                  gl.UNSIGNED_SHORT,
+                  0);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+}
+
+function drawObjects(time) {
+  
 
   gl.useProgram(shaderProgram);
 
@@ -370,9 +502,14 @@ function draw(time) {
   gl.uniformMatrix4fv(projection_uniform, false, projection);
   gl.uniformMatrix4fv(rotation_uniform, false, rotatematrix);
 
+  gl.uniformMatrix4fv(shadow_proj_uniform, false, shadowProjectionMatrix);
+gl.uniformMatrix4fv(shadow_MV_uniform, false, shadow_MVmatrix);
+
+
   gl.uniform1i(sampler_uniform,0);
   gl.uniform1i(sampler2_uniform,1);
   gl.uniform1i(samplerbump_uniform,2);
+  gl.uniform1i(samplerbump_shadow,3);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -380,6 +517,9 @@ function draw(time) {
   gl.bindTexture(gl.TEXTURE_2D, texture2);
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, texturebump);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, shadowDepthTexture);
+
 
   gl.bindVertexArray(teapot_vao);
   gl.drawElements(gl.TRIANGLES,
@@ -390,186 +530,10 @@ function draw(time) {
 
    
 
-  requestAnimationFrame(draw);
-}
-
-function ShadowGen(){
-  const depthTexture = gl.createTexture();
-  const depthTextureSize = 512;
-  gl.bindTexture(gl.TEXTURE_2D, depthTexture);
-  gl.texImage2D(
-      gl.TEXTURE_2D,      // target
-      0,                  // mip level
-      gl.DEPTH_COMPONENT32F, // internal format
-      depthTextureSize,   // width
-      depthTextureSize,   // height
-      0,                  // border
-      gl.DEPTH_COMPONENT, // format
-      gl.FLOAT,           // type
-      null);              // data
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-  const depthFramebuffer = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, depthFramebuffer);
-  gl.framebufferTexture2D(
-      gl.FRAMEBUFFER,       // target
-      gl.DEPTH_ATTACHMENT,  // attachment point
-      gl.TEXTURE_2D,        // texture target
-      depthTexture,         // texture
-      0);                   // mip level
-}
-
-function plane(){
-  var canvas = document.getElementById("myGLCanvas");
-  gl = canvas.getContext("webgl2");
-  if (!gl)
-    alert("Failed to create WebGL context!");
-
-  var vs_plane = `
-    attribute vec3 aVertexPosition;                
-    void main() {                                  
-      gl_Position = vec4(aVertexPosition, 1.0);    
-    
-    } `;
-
-  var fs_plane = `
-  precision mediump float;                    
-     void main() {                               
-       gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);  
-     } 
-  `;
   
-  var planeVertices = [ 0.0,  1.0,  -2.0,
-                          -1.0, -1.0,  0.0,
-                           1.0, 1.0,  0.0
-
-  ];
-
-  var vertexShader_plane = gl.createShader(gl.VERTEX_SHADER);
-  gl.shaderSource(vertexShader_plane, vs_plane);
-  gl.compileShader(vertexShader_plane);
-  if (!gl.getShaderParameter(vertexShader_plane, gl.COMPILE_STATUS))
-    alert(gl.getShaderInfoLog(vertexShader_plane));
-
-  var fragmentShader_plane = gl.createShader(gl.FRAGMENT_SHADER);
-  gl.shaderSource(fragmentShader_plane, fs_plane);
-  gl.compileShader(fragmentShader_plane);
-  if (!gl.getShaderParameter(fragmentShader_plane, gl.COMPILE_STATUS))
-    alert(gl.getShaderInfoLog(fragmentShader_plane));
-
-    var shaderProgram_plane = gl.createProgram();
-  gl.attachShader(shaderProgram_plane, vertexShader_plane);
-  gl.attachShader(shaderProgram_plane, fragmentShader_plane);
-  gl.linkProgram(shaderProgram_plane);
-  if (!gl.getProgramParameter(shaderProgram_plane, gl.LINK_STATUS))
-    alert("Failed to setup plane shaders");
- 
-
-  var vertexPositionAttribute_plane =
-    gl.getAttribLocation(shaderProgram, "aVertexPosition"); 
-
-    
-
-  var vertexBuffer_plane = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer_plane);
-  
-  gl.bufferData(gl.ARRAY_BUFFER,
-                new Float32Array(planeVertices),
-                gl.STATIC_DRAW);
-
-  vertexBuffer_plane.itemSize = 3;
-  vertexBuffer_plane.numberOfItems = 3;
-
-  gl.vertexAttribPointer(vertexPositionAttribute_plane, 
-                    vertexBuffer_plane.itemSize, gl.FLOAT, false, 0, 0);
-  gl.enableVertexAttribArray(vertexPositionAttribute_plane);
-  gl.useProgram(shaderProgram_plane);
-
-  gl.clearColor(0.0, 0.0, 0.0, 1.0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-   gl.drawArrays(gl.TRIANGLE_STRIP, 0, vertexBuffer.numberOfItems);
-
 }
 
-function Test() {
 
-  var canvas = document.getElementById("myGLCanvas");
-  gl = canvas.getContext("webgl2");
-  if (!gl)
-    alert("Failed to create WebGL context!");
-
-var vertexShaderSource = 
-  "attribute vec3 aVertexPosition;                 \n" +
-  "void main() {                                   \n" +
-  "  gl_Position = vec4(aVertexPosition, 1.0);     \n" +
-  "}                                               \n";           
-
-
-var vertexShader = gl.createShader(gl.VERTEX_SHADER);
-gl.shaderSource(vertexShader, vertexShaderSource);
-gl.compileShader(vertexShader);
-if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS))
-  alert(gl.getShaderInfoLog(vertexShader));
- 
-
-
-var fragmentShaderSource = 
-   "precision mediump float;                    \n"+
-   "void main() {                               \n"+
-   "  gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);  \n"+
-   "}                                           \n";
-
-
-var fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
-gl.shaderSource(fragmentShader, fragmentShaderSource);
-gl.compileShader(fragmentShader);
-if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS))
-  alert(gl.getShaderInfoLog(fragmentShader));
-
-
-var shaderProgram = gl.createProgram();
-gl.attachShader(shaderProgram, vertexShader);
-gl.attachShader(shaderProgram, fragmentShader);
-gl.linkProgram(shaderProgram);
-if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
-  alert("Failed to setup shaders");
-
-
-
-
-var vertexPositionAttribute =
-  gl.getAttribLocation(shaderProgram, "aVertexPosition"); 
-
-
-
-var vertexBuffer = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-var triangleVertices = [ 0.0,  -2.0,  1.0,
-                          -1.0, 0.0,  -1.0,
-                           1.0, 0.0,  -1.0
-];
-gl.bufferData(gl.ARRAY_BUFFER,
-              new Float32Array(triangleVertices),
-              gl.STATIC_DRAW);
-vertexBuffer.itemSize = 3;
-vertexBuffer.numberOfItems = 3;
-
-gl.clearColor(0.0, 0.0, 0.0, 1.0);
-gl.clear(gl.COLOR_BUFFER_BIT);
-
-
-gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 
-                       vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
-gl.enableVertexAttribArray(vertexPositionAttribute);
-
-
-gl.useProgram(shaderProgram);
-//gl.enable(gl.DEPTH_TEST);  
-gl.drawArrays(gl.TRIANGLES, 0, vertexBuffer.numberOfItems);
-}
 
 </script>
 
